@@ -22,7 +22,7 @@ Herramienta web para descargar tiles satelitales a partir de un AOI y fusionarlo
 
 ```bash
 # 1. Clonar el repositorio
-git clone <repo-url>
+git clone https://github.com/luzarin/Extractor-Tiles.git
 cd tiles_downloader
 
 # 2. Instalar y configurar una versión de Python con pyenv
