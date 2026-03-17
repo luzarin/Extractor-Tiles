@@ -49,14 +49,10 @@ pip install --no-deps --no-build-isolation git+https://github.com/Jimut123/jimut
 
 ## Uso
 
-Para Levantar la API e iniciar la UI de forma local, utiliza el script incluído de Linux:
+Para levantar la API e iniciar la UI de forma local:
 
 ```bash
-# Dale permisos de ejecución si es necesario
-chmod +x scripts/run_workflow_ui.sh
-
-# Ejecuta indicando el puerto
-./scripts/run_workflow_ui.sh 8095
+uv run uvicorn app:app --reload --host 127.0.0.1 --port 8095
 ```
 
 Abre en tu navegador la dirección web: [http://127.0.0.1:8095](http://127.0.0.1:8095)

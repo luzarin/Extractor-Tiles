@@ -47,13 +47,7 @@ uv pip install --no-deps --no-build-isolation git+https://github.com/Jimut123/ji
 ## Uso
 
 ```powershell
-.\scripts\run_workflow_ui.ps1 -Port 8095
-```
-
-Comando directo equivalente:
-
-```powershell
-uv run uvicorn api.workflow_ui_api:app --app-dir . --host 127.0.0.1 --port 8095 --reload
+uv run uvicorn app:app --reload --host 127.0.0.1 --port 8095
 ```
 
 Abrir en el navegador: [http://127.0.0.1:8095](http://127.0.0.1:8095)

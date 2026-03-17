@@ -7,7 +7,7 @@ $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Push-Location $Root
 try {
-    uv run uvicorn api.workflow_ui_api:app --app-dir $Root --host 127.0.0.1 --port $Port --reload
+    uv run uvicorn app:app --reload --host 127.0.0.1 --port $Port
 }
 finally {
     Pop-Location
