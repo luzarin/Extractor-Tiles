@@ -63,7 +63,7 @@ Abrir en el navegador: [http://127.0.0.1:8095](http://127.0.0.1:8095)
 ## Estructura
 
 ```
-tiles_downloader/
+extractor_tiles/
 ├── api/
 │   └── workflow_ui_api.py          # API FastAPI
 ├── scripts/
