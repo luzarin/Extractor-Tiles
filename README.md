@@ -1,4 +1,4 @@
-# Extractor de Tiles (Windows PowerShell)
+﻿# Extractor de Tiles (Windows PowerShell)
 
 Herramienta web para descargar tiles satelitales a partir de un AOI y fusionarlos en un GeoTIFF.
 
@@ -80,10 +80,6 @@ extractor_tiles/
 Base path actual: `/api/v1`
 Compatibilidad: `/api/v0` (legacy).
 
-Documentacion OpenAPI:
-- `GET /openapi.json` (schema OpenAPI 3.1)
-- `GET /docs` (Swagger UI)
-
 | Metodo | Endpoint | Status | Descripcion |
 |---|---|---|---|
 | `GET` | `/` | `200` | Sirve la UI (fuera del schema OpenAPI) |
@@ -93,8 +89,3 @@ Documentacion OpenAPI:
 | `GET` | `/api/v1/tiles/jobs/{job_id}` | `200`, `404`, `422` | Estado completo de un job |
 | `GET` | `/api/v1/tiles/jobs/{job_id}/logs` | `200`, `404`, `422` | Logs de un job |
 | `POST` | `/api/v1/tiles/jobs/{job_id}/cancel` | `200`, `404`, `422` | Solicita cancelacion |
-
-Notas:
-- `job_id` usa formato UUID.
-- `provider` en `/api/v1/tiles/start`: `apple | esri | google | custom_xyz`.
-- Los mismos endpoints tambien responden bajo `/api/v0/...` para compatibilidad.
