@@ -10,11 +10,13 @@ import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional
+from uuid import UUID
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -417,36 +419,141 @@ def _start_thread(target, *args, **kwargs) -> None:
     thread.start()
 
 
-app = FastAPI(title="Tiles Downloader UI API", version="1.0.0")
+ProviderName = Literal["apple", "esri", "google", "custom_xyz"]
+JobStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
+JobStage = Literal["queued", "downloading_tiles", "cancelling", "completed", "failed", "cancelled"]
 
 
-@app.get("/")
+class APIError(BaseModel):
+    detail: str = Field(..., description="Human-readable error detail.")
+
+
+class HealthResponse(BaseModel):
+    status: Literal["ok"] = Field("ok", description="Service health status.")
+
+
+class StartDownloadResponse(BaseModel):
+    job_id: UUID = Field(..., description="Unique job identifier.")
+
+
+class JobSummaryResponse(BaseModel):
+    job_id: UUID = Field(..., description="Unique job identifier.")
+    kind: str = Field(..., description="Job type.")
+    status: JobStatus = Field(..., description="Job status.")
+    stage: JobStage = Field(..., description="Current processing stage.")
+    created_at: datetime = Field(..., description="Creation time in UTC.")
+    updated_at: datetime = Field(..., description="Last update time in UTC.")
+    error: Optional[str] = Field(None, description="Error message when status is failed.")
+    cancel_requested: bool = Field(..., description="Whether cancellation was requested.")
+
+
+class JobDetailResponse(JobSummaryResponse):
+    logs: List[str] = Field(default_factory=list, description="Execution logs.")
+    result: Dict[str, Any] = Field(default_factory=dict, description="Job output metadata.")
+
+
+class JobListResponse(BaseModel):
+    jobs: List[JobSummaryResponse] = Field(default_factory=list, description="Available jobs.")
+
+
+class CancelJobResponse(BaseModel):
+    job_id: UUID = Field(..., description="Unique job identifier.")
+    accepted: bool = Field(..., description="Whether cancellation was accepted.")
+    message: str = Field(..., description="Cancellation status message.")
+    had_process: bool = Field(..., description="Whether the job had an attached OS process.")
+
+
+class JobLogsResponse(BaseModel):
+    job_id: UUID = Field(..., description="Unique job identifier.")
+    logs: List[str] = Field(default_factory=list, description="Execution logs.")
+
+
+class TilesExamplesResponse(BaseModel):
+    providers: List[ProviderName] = Field(..., description="Supported provider values.")
+    example_esri_template: str = Field(..., description="ESRI tile template.")
+    example_google_template: str = Field(..., description="Google tile template.")
+    example_custom_template: str = Field(..., description="Example custom XYZ template.")
+
+
+BAD_REQUEST_RESPONSE = {
+    400: {
+        "model": APIError,
+        "description": "Invalid request payload or business validation error.",
+    }
+}
+JOB_NOT_FOUND_RESPONSE = {404: {"model": APIError, "description": "Job not found."}}
+
+API_PREFIX_V1 = "/api/v1"
+API_PREFIX_V0 = "/api/v0"
+
+api_router = APIRouter()
+
+app = FastAPI(
+    title="Extractor de Tiles API",
+    version="1.1.0",
+    description="API para iniciar y monitorear descargas de tiles y crear mosaicos GeoTIFF.",
+    openapi_tags=[
+        {"name": "system", "description": "Service health and utility endpoints."},
+        {"name": "tiles", "description": "Tile download workflow operations."},
+    ],
+)
+
+
+@app.get("/", include_in_schema=False)
 def workflow_ui() -> FileResponse:
     if not UI_PATH.exists():
         raise HTTPException(status_code=404, detail="workflow.html not found")
     return FileResponse(UI_PATH)
 
 
-@app.get("/health")
-def health() -> Dict[str, str]:
-    return {"status": "ok"}
+@api_router.get(
+    "/health",
+    tags=["system"],
+    summary="Health check",
+    description="Returns service liveness.",
+    operation_id="healthCheck",
+    response_model=HealthResponse,
+)
+def health() -> HealthResponse:
+    return HealthResponse(status="ok")
 
 
-@app.post("/tiles/start")
+@api_router.post(
+    "/tiles/start",
+    tags=["tiles"],
+    summary="Start a tile extraction job",
+    description="Creates a background job and returns its `job_id` for polling.",
+    operation_id="startTileExtractionJob",
+    response_model=StartDownloadResponse,
+    status_code=202,
+    responses=BAD_REQUEST_RESPONSE,
+)
 async def start_download(
-    aoi_files: List[UploadFile] = File(...),
-    provider: str = Form("apple"),
-    zoom: int = Form(18),
-    tile_url_template: str = Form(""),
-    output_tif: str = Form("data/aoi_tiles.tif"),
-    aoi_layer: str = Form(""),
-    aoi_where: str = Form(""),
-    jimutmap_threads: int = Form(20),
-    jimutmap_v: int = Form(10221),
-    max_tiles: int = Form(50000),
-    jimutmap_access_key: str = Form(""),
-    jimutmap_container_dir: str = Form(""),
-) -> Dict[str, Any]:
+    aoi_files: Annotated[
+        List[UploadFile],
+        File(
+            ...,
+            description="AOI files. Supported: ZIP, GPKG, GeoJSON, or shapefile set (.shp/.dbf/.shx).",
+        ),
+    ],
+    provider: Annotated[
+        ProviderName,
+        Form(description="Tile provider: apple, esri, google, custom_xyz."),
+    ] = "apple",
+    zoom: Annotated[int, Form(ge=1, le=22, description="Tile zoom level.")] = 18,
+    tile_url_template: Annotated[
+        str,
+        Form(description="Required when provider=custom_xyz. Uses {z}, {x}, {y}."),
+    ] = "",
+    output_tif: Annotated[str, Form(description="Output GeoTIFF path.")] = "data/aoi_tiles.tif",
+    aoi_layer: Annotated[str, Form(description="Optional AOI layer name.")] = "",
+    aoi_where: Annotated[str, Form(description="Optional OGR WHERE filter.")] = "",
+    jimutmap_threads: Annotated[int, Form(ge=1, le=128, description="Apple provider thread count.")] = 20,
+    jimutmap_v: Annotated[int, Form(ge=1, description="Apple tile version parameter `v`.")] = 10221,
+    max_tiles: Annotated[int, Form(ge=0, description="Maximum allowed tile count. 0 disables limit.")] = 50000,
+    jimutmap_access_key: Annotated[str, Form(description="Apple access key (or full request URL/query).")] = "",
+    jimutmap_container_dir: Annotated[str, Form(description="Optional temp directory for Apple tile JPGs.")] = "",
+) -> StartDownloadResponse:
     if provider not in PROVIDER_TO_BACKEND:
         raise HTTPException(status_code=400, detail="provider must be apple|esri|google|custom_xyz")
 
@@ -492,47 +599,92 @@ async def start_download(
         jimutmap_access_key=jimutmap_access_key.strip() or os.environ.get("JIMUTMAP_ACCESS_KEY", "").strip(),
         jimutmap_container_dir=jimutmap_container_dir,
     )
-    return {"job_id": job.job_id}
+    return StartDownloadResponse(job_id=job.job_id)
 
 
-@app.get("/tiles/jobs/{job_id}")
-def get_job(job_id: str) -> Dict[str, Any]:
+@api_router.get(
+    "/tiles/jobs/{job_id}",
+    tags=["tiles"],
+    summary="Get job status",
+    description="Returns full status, logs, and result metadata for one job.",
+    operation_id="getTileExtractionJob",
+    response_model=JobDetailResponse,
+    responses=JOB_NOT_FOUND_RESPONSE,
+)
+def get_job(job_id: UUID) -> JobDetailResponse:
+    job_id_s = str(job_id)
     try:
-        return manager.to_dict(job_id)
+        return JobDetailResponse.model_validate(manager.to_dict(job_id_s))
     except KeyError:
         raise HTTPException(status_code=404, detail="job not found")
 
 
-@app.post("/tiles/jobs/{job_id}/cancel")
-def cancel_job(job_id: str) -> Dict[str, Any]:
+@api_router.post(
+    "/tiles/jobs/{job_id}/cancel",
+    tags=["tiles"],
+    summary="Cancel job",
+    description="Requests cancellation for a running or queued job.",
+    operation_id="cancelTileExtractionJob",
+    response_model=CancelJobResponse,
+    responses=JOB_NOT_FOUND_RESPONSE,
+)
+def cancel_job(job_id: UUID) -> CancelJobResponse:
+    job_id_s = str(job_id)
     try:
-        result = manager.request_cancel(job_id)
+        result = manager.request_cancel(job_id_s)
         if result.get("accepted"):
-            manager.patch(job_id, stage="cancelling", log="[INFO] Cancellation requested by user.")
-        return {"job_id": job_id, **result}
+            manager.patch(job_id_s, stage="cancelling", log="[INFO] Cancellation requested by user.")
+        return CancelJobResponse(job_id=job_id, **result)
     except KeyError:
         raise HTTPException(status_code=404, detail="job not found")
 
 
-@app.get("/tiles/jobs")
-def list_jobs() -> Dict[str, Any]:
-    return {"jobs": manager.list_jobs()}
+@api_router.get(
+    "/tiles/jobs",
+    tags=["tiles"],
+    summary="List jobs",
+    description="Returns all known jobs ordered by creation date (newest first).",
+    operation_id="listTileExtractionJobs",
+    response_model=JobListResponse,
+)
+def list_jobs() -> JobListResponse:
+    return JobListResponse.model_validate({"jobs": manager.list_jobs()})
 
 
-@app.get("/tiles/jobs/{job_id}/logs")
-def get_job_logs(job_id: str) -> Dict[str, Any]:
+@api_router.get(
+    "/tiles/jobs/{job_id}/logs",
+    tags=["tiles"],
+    summary="Get job logs",
+    description="Returns only the log lines for a given job.",
+    operation_id="getTileExtractionJobLogs",
+    response_model=JobLogsResponse,
+    responses=JOB_NOT_FOUND_RESPONSE,
+)
+def get_job_logs(job_id: UUID) -> JobLogsResponse:
+    job_id_s = str(job_id)
     try:
-        data = manager.to_dict(job_id)
-        return {"job_id": job_id, "logs": data["logs"]}
+        data = manager.to_dict(job_id_s)
+        return JobLogsResponse(job_id=job_id, logs=data["logs"])
     except KeyError:
         raise HTTPException(status_code=404, detail="job not found")
 
 
-@app.get("/tiles/examples")
-def examples() -> Dict[str, Any]:
-    return {
-        "providers": list(PROVIDER_TO_BACKEND.keys()),
-        "example_esri_template": DEFAULT_TILE_TEMPLATES["esri"],
-        "example_google_template": DEFAULT_TILE_TEMPLATES["google"],
-        "example_custom_template": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-    }
+@api_router.get(
+    "/tiles/examples",
+    tags=["tiles"],
+    summary="Get provider examples",
+    description="Returns supported providers and tile-template examples.",
+    operation_id="getTileProviderExamples",
+    response_model=TilesExamplesResponse,
+)
+def examples() -> TilesExamplesResponse:
+    return TilesExamplesResponse(
+        providers=list(PROVIDER_TO_BACKEND.keys()),
+        example_esri_template=DEFAULT_TILE_TEMPLATES["esri"],
+        example_google_template=DEFAULT_TILE_TEMPLATES["google"],
+        example_custom_template="https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+    )
+
+app.include_router(api_router, prefix=API_PREFIX_V1)
+app.include_router(api_router, prefix=API_PREFIX_V0, include_in_schema=False)
+app.include_router(api_router, include_in_schema=False)

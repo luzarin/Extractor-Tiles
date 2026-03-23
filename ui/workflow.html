@@ -78,7 +78,7 @@
                     d="M4 16v1a2 2 0 002 2h12a2 2 0 002-2v-1M8 12l4-4m0 0l4 4m-4-4v9" />
                 </svg>
               </span>
-              <span id="dropZoneLabel">Formato ZIP/GPKG/GeoJSON. Haz clic aquí para seleccionar.</span>
+              <span id="dropZoneLabel">Formato ZIP/GPKG/GeoJSON. Haz clic aquÃ­ para seleccionar.</span>
             </div>
             <button id="clearFilesBtn" type="button"
               class="invisible ml-2 inline-flex items-center text-slate-400 hover:text-red-500 transition-colors"
@@ -132,7 +132,7 @@
             <input id="jimutV" type="number" min="1" value="10221" class="soft-input w-full" />
           </div>
           <div>
-            <label class="block text-sm font-medium text-slate-800 mb-1.5">Límite de tiles</label>
+            <label class="block text-sm font-medium text-slate-800 mb-1.5">Lí­mite de tiles</label>
             <input id="maxTiles" type="number" min="0" value="100000" class="soft-input w-full" />
           </div>
         </div>
@@ -161,7 +161,7 @@
           </div>
           <div class="w-full h-2.5 bg-slate-200 rounded-full overflow-hidden">
             <div id="progressBar"
-              class="h-2.5 w-0 rounded-full transition-all duration-500 bg-gradient-to-r from-[#1a2b6b] to-[#4a7ab5]">
+              class="h-2.5 w-0 rounded-full transition-all duration-500 bg-gradient-to-r from-[#4a7ab5] to-[#1a2b6b]">
             </div>
           </div>
           <div id="statusBox" class="flex flex-wrap gap-2 pt-1"></div>
@@ -178,7 +178,7 @@
   </main>
 
   <script>
-    const apiBase = window.location.origin;
+    const apiBase = `${window.location.origin}/api/v1`;
     const providerDefaults = {
       apple: "",
       esri: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -211,7 +211,7 @@
       logs: document.getElementById("logs"),
     };
 
-    const state = { jobId: null, pollHandle: null, running: false };
+    const state = { jobId: null, pollHandle: null, running: false, lastProgress: 0 };
 
     const statusEs = {
       idle: "inactivo",
@@ -252,8 +252,13 @@
       }
     }
 
-    function setProgress(pct) {
-      const n = Math.max(0, Math.min(100, Number(pct || 0)));
+    function setProgress(pct, options = {}) {
+      const allowDecrease = Boolean(options.allowDecrease);
+      let n = Math.max(0, Math.min(100, Number(pct || 0)));
+      if (!allowDecrease) {
+        n = Math.max(state.lastProgress, n);
+      }
+      state.lastProgress = n;
       const txt = `${Math.round(n)}%`;
       el.progressText.textContent = txt;
       el.progressBar.style.width = `${n}%`;
@@ -264,11 +269,34 @@
       el.logs.scrollTop = el.logs.scrollHeight;
     }
 
+    function appendLog(line) {
+      if (!line) return;
+      el.logs.textContent += `${el.logs.textContent ? "\n" : ""}${line}`;
+      el.logs.scrollTop = el.logs.scrollHeight;
+    }
+
+    function getErrorMessage(err) {
+      const raw = err instanceof Error ? err.message : String(err || "");
+      const trimmed = raw.trim();
+      if (!trimmed) return "Error desconocido.";
+      try {
+        const data = JSON.parse(trimmed);
+        if (typeof data?.detail === "string" && data.detail.trim()) return data.detail;
+      } catch (_) {
+        // Ignore parse errors and keep raw text.
+      }
+      return trimmed;
+    }
+
     function parseTqdm(logs) {
       if (!Array.isArray(logs)) return null;
       for (let i = logs.length - 1; i >= 0; i -= 1) {
-        const m = String(logs[i]).match(/Downloading Tiles:\s+(\d+)%/i);
-        if (m) return Number(m[1]);
+        const line = String(logs[i]);
+        const matches = Array.from(line.matchAll(/Downloading Tiles:\s+(\d+)%/ig));
+        if (matches.length > 0) {
+          const last = matches[matches.length - 1];
+          return Number(last[1]);
+        }
       }
       return null;
     }
@@ -279,7 +307,7 @@
       if (job.stage === "cancelling") return 95;
       const tqdm = parseTqdm(job.logs);
       if (tqdm !== null) return Math.min(95, Math.max(5, tqdm));
-      if (job.stage === "downloading_tiles") return 35;
+      if (job.stage === "downloading_tiles") return 8;
       return 5;
     }
 
@@ -368,7 +396,11 @@
           const job = await fetchJob(jobId);
           setStatus(job.status, job.stage, job.error);
           setProgress(estimateProgress(job));
-          renderLogs(job.logs);
+          const logs = Array.isArray(job.logs) ? job.logs.slice() : [];
+          if (job.status === "failed" && logs.length === 0 && job.error) {
+            logs.push(`[ERROR] ${job.error}`);
+          }
+          renderLogs(logs);
           if (job.status === "completed" || job.status === "failed" || job.status === "cancelled") {
             stopPolling();
             state.running = false;
@@ -380,7 +412,10 @@
           state.running = false;
           state.jobId = null;
           updateButtons();
-          setStatus("failed", "failed", String(err));
+          const msg = getErrorMessage(err);
+          setStatus("failed", "failed", msg);
+          setProgress(100);
+          renderLogs([`[ERROR] ${msg}`]);
         }
       }, 1200);
     }
@@ -421,7 +456,7 @@
       state.running = true;
       updateButtons();
       setStatus("running", "queued", "");
-      setProgress(2);
+      setProgress(2, { allowDecrease: true });
       renderLogs(["[INFO] Iniciando job de descarga de tiles..."]);
 
       const fd = new FormData();
@@ -443,13 +478,19 @@
         }
         const data = await res.json();
         state.jobId = data.job_id;
+        updateButtons();
         startPolling(state.jobId);
       } catch (err) {
         state.running = false;
         state.jobId = null;
         updateButtons();
-        setStatus("failed", "failed", String(err));
+        const msg = getErrorMessage(err);
+        setStatus("failed", "failed", msg);
         setProgress(100);
+        renderLogs([
+          "[INFO] Iniciando job de descarga de tiles...",
+          `[ERROR] ${msg}`,
+        ]);
       }
     });
 
@@ -462,11 +503,12 @@
           throw new Error(txt || `HTTP ${res.status}`);
         }
         const data = await res.json();
-        el.logs.textContent += `\n[INFO] ${data.message || "Cancelación solicitada."}`;
-        el.logs.scrollTop = el.logs.scrollHeight;
+        appendLog(`[INFO] ${data.message || "CancelaciÃ³n solicitada."}`);
         setStatus("running", "cancelling", "");
       } catch (err) {
-        setStatus("failed", "failed", String(err));
+        const msg = getErrorMessage(err);
+        appendLog(`[ERROR] ${msg}`);
+        setStatus("failed", "failed", msg);
       }
     });
 
@@ -474,7 +516,7 @@
     syncFileLabel();
     updateButtons();
     setStatus("idle", "-", "");
-    setProgress(0);
+    setProgress(0, { allowDecrease: true });
     renderLogs(["[INFO] UI de descarga de tiles lista."]);
   </script>
 </body>
